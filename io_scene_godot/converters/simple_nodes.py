@@ -4,17 +4,84 @@ Anything more complex should go in it's own file
 """
 
 import math
+import re
+import os
 import logging
 from ..structures import (
-    NodeTemplate, fix_directional_transform, gamma_correct
+    NodeTemplate, InstanceTemplate, ExternalResource, fix_directional_transform, gamma_correct
 )
 from .animation import export_animation_data, AttributeConvertInfo
 
+def _find_scene_in_subtree(folder, scene_filename):
+    """Searches for godot ecene that match a blender empty. If found,
+    it returns (path, type) otherwise it returns None"""
+    candidates = []
+
+    for dir_path, _subdirs, files in os.walk(folder):
+        if scene_filename in files:
+            candidates.append(os.path.join(dir_path, scene_filename))
+
+    # Checks it is a scene and finds out what type
+    valid_candidates = []
+    for candidate in candidates:
+        with open(candidate) as scene_file:
+            first_line = scene_file.readline()
+            if "gd_scene" in first_line:
+                valid_candidates.append((candidate, "PackedScene"))
+
+    if not valid_candidates:
+        return None
+    if len(valid_candidates) > 1:
+        logging.warning("Multiple scenes found for %s", scene_filename)
+    return valid_candidates[0]
+
+def find_scene(export_settings, scene_filename):
+    """Searches for an existing Godot scene"""
+    search_type = export_settings["material_search_paths"]
+    if search_type == "PROJECT_DIR":
+        search_dir = export_settings["project_path_func"]()
+    elif search_type == "EXPORT_DIR":
+        search_dir = os.path.dirname(export_settings["path"])
+    else:
+        search_dir = None
+
+    if search_dir is None:
+        return None
+    return _find_scene_in_subtree(search_dir, scene_filename)
+
+def use_external_scene(escn_file, export_settings, scene_name):
+    external_scene = find_scene(export_settings, scene_name)
+    if external_scene is not None:
+        resource_id = escn_file.get_external_resource(scene_name)
+        if resource_id is None:
+            ext_scene = ExternalResource(
+                external_scene[0],
+                external_scene[1],
+            )
+            resource_id = escn_file.add_external_resource(ext_scene, scene_name)
+        return "ExtResource({})".format(resource_id)
+
+    logging.warning(
+        "Unable to find '%s' in project", scene_name
+    )
+    return None
 
 def export_empty_node(escn_file, export_settings, node, parent_gd_node):
     """Converts an empty (or any unknown node) into a spatial"""
     if "EMPTY" not in export_settings['object_types']:
         return parent_gd_node
+
+    match = re.match('(.*\.[te]scn)', node.name)
+    if match:
+        scene_name = match.group(1)
+        instance = use_external_scene(escn_file, export_settings, scene_name)
+        if instance:
+            instance_node = InstanceTemplate(node.name, instance, parent_gd_node)
+            instance_node['transform'] = node.matrix_local
+            escn_file.add_node(instance_node)
+
+            return instance_node
+
     empty_node = NodeTemplate(node.name, "Spatial", parent_gd_node)
     empty_node['transform'] = node.matrix_local
     escn_file.add_node(empty_node)

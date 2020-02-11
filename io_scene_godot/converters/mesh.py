@@ -2,10 +2,11 @@
 import logging
 import bpy
 import mathutils
+import os
 
 from .material import export_material
 from ..structures import (
-    Array, NodeTemplate, InternalResource, Map, gamma_correct)
+    Array, NodeTemplate, InternalResource, ExternalResource, Map, gamma_correct)
 from .utils import MeshConverter, MeshResourceKey
 from .physics import has_physics, export_physics_properties
 from .armature import generate_bones_mapping
@@ -13,6 +14,61 @@ from .animation import export_animation_data
 
 MAX_BONE_PER_VERTEX = 4
 
+
+def _find_script_in_subtree(folder, script_filename):
+    """Searches for godot script that match a blender empty. If found,
+    it returns (path, type) otherwise it returns None"""
+    candidates = []
+
+    for dir_path, _subdirs, files in os.walk(folder):
+        if script_filename in files:
+            candidates.append(os.path.join(dir_path, script_filename))
+
+    # Checks it is a script and finds out what type
+    valid_candidates = []
+    for candidate in candidates:
+        with open(candidate) as script_file:
+            first_line = script_file.readline()
+            # this probably isn't a good check
+            if "extends" in first_line:
+                valid_candidates.append((candidate, "Script"))
+
+    if not valid_candidates:
+        return None
+    if len(valid_candidates) > 1:
+        logging.warning("Multiple scripts found for %s", script_filename)
+    return valid_candidates[0]
+
+def find_script(export_settings, script_filename):
+    """Searches for an existing Godot script"""
+    search_type = export_settings["material_search_paths"]
+    if search_type == "PROJECT_DIR":
+        search_dir = export_settings["project_path_func"]()
+    elif search_type == "EXPORT_DIR":
+        search_dir = os.path.dirname(export_settings["path"])
+    else:
+        search_dir = None
+
+    if search_dir is None:
+        return None
+    return _find_script_in_subtree(search_dir, script_filename)
+
+def use_external_script(escn_file, export_settings, script_name):
+    external_script = find_script(export_settings, script_name)
+    if external_script is not None:
+        resource_id = escn_file.get_external_resource(script_name)
+        if resource_id is None:
+            ext_script = ExternalResource(
+                external_script[0],
+                external_script[1],
+            )
+            resource_id = escn_file.add_external_resource(ext_script, script_name)
+        return "ExtResource({})".format(resource_id)
+
+    logging.warning(
+        "Unable to find '%s' in project", script_name
+    )
+    return None
 
 # ------------------------------- The Mesh -----------------------------------
 def export_mesh_node(escn_file, export_settings, obj, parent_gd_node):
@@ -63,6 +119,11 @@ def export_mesh_node(escn_file, export_settings, obj, parent_gd_node):
         mesh_node['transform'] = mathutils.Matrix.Identity(4)
     else:
         mesh_node['transform'] = obj.matrix_local
+
+    if 'script' in obj:
+        script = use_external_script(escn_file, export_settings, obj['script'])
+        if script:
+            mesh_node['script'] = script
 
     escn_file.add_node(mesh_node)
 

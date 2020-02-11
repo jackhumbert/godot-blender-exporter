@@ -122,7 +122,7 @@ class FileEntry(collections.OrderedDict):
         for var in self.heading:
             val = self.heading[var]
 
-            if isinstance(val, str):
+            if isinstance(val, str) and var != "instance":
                 val = '"{}"'.format(val)
 
             out_str += " {}={}".format(var, val)
@@ -212,6 +212,57 @@ class NodeTemplate(FileEntry):
         """Get the node type in Godot scene"""
         return self.heading["type"]
 
+class InstanceTemplate(FileEntry):
+    """Most things inside the escn file are Nodes that make up the scene tree.
+    This is a template node that can be used to contruct nodes of any type.
+    It is not intended that other classes in the exporter inherit from this,
+    but rather that all the exported nodes use this template directly."""
+    def __init__(self, name, instance, parent_node):
+        # set child, parent relation
+        self.children = []
+        self.parent = parent_node
+
+        # filter out special character
+        node_name = name.replace('.tscn', '').replace('.escn', '').replace('.', '').replace('/', '').replace('\\', '')
+
+        # solve duplication
+        counter = 1
+        child_name_set = {c.get_name() for c in self.parent.children}
+        node_name_base = node_name
+        while node_name in child_name_set:
+            node_name = node_name_base + str(counter).zfill(3)
+            counter += 1
+
+        parent_node.children.append(self)
+
+        super().__init__(
+            "node",
+            collections.OrderedDict((
+                ("name", node_name),
+                ("instance", instance),
+                ("parent", parent_node.get_path())
+            ))
+        )
+
+    def get_name(self):
+        """Get the name of the node in Godot scene"""
+        return self.heading['name']
+
+    def get_path(self):
+        """Get the node path in the Godot scene"""
+        # root node
+        if 'parent' not in self.heading:
+            return '.'
+
+        # children of root node
+        if self.heading['parent'] == '.':
+            return self.heading['name']
+
+        return self.heading['parent'] + '/' + self.heading['name']
+
+    def get_type(self):
+        """Get the node type in Godot scene"""
+        return self.heading["type"]
 
 class ExternalResource(FileEntry):
     """External Resouces are references to external files. In the case of
